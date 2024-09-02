@@ -11,6 +11,7 @@ LiteratureReview-RAG is a machine learning-based framework that assists research
 
 ## How to use?
 1- Create a .env file and put your OpenAPI key as API_KEY=YOUR_API_KEY
+
 2- Open the jupyters and everything else should be easy to follow.
 
 ## License
