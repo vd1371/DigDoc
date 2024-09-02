@@ -1,9 +1,6 @@
 # LiteratureReviewRAG
 An Automated System for Enhanced Academic Literature Reviews
 
-
-# LiteratureReview-RAG
-
 **LiteratureReview-RAG**: An Automated System for Enhanced Academic Literature Reviews
 
 #### My personal repo for quick read and asking questions about PDFs that I want to review.
