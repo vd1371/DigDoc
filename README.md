@@ -10,9 +10,10 @@ An Automated System for Enhanced Academic Literature Reviews
 LiteratureReview-RAG is a machine learning-based framework that assists researchers by automating the process of generating literature reviews. By combining the power of information retrieval and text generation, this project enables the creation of comprehensive, relevant, and well-organized literature summaries. 
 
 ## How to use?
-1- Create a .env file and put your OpenAPI key as API_KEY=YOUR_API_KEY
+1- Create a .env file and put your OpenAPI key as OPENAI_API_KEY=YOUR_API_KEY
+2- If you are using Sonnet, ANTHROPIC_API_KEY=YOUR_API_KEY
 
-2- Open the jupyters and everything else should be easy to follow.
+3- Open the jupyter notebooks and everything else should be easy to follow.
 
 ## License
 

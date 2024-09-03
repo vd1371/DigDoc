@@ -164,3 +164,4 @@ cython_debug/
 *.md
 !README.md
 /.idea
+projects/*
