@@ -66,11 +66,14 @@ def ask_question(question, vectorstore, model):
     return result["result"], result["source_documents"]
 
 
-def convert_chat_history(chat_history, n_turns=2):
+def convert_chat_history(chat_history, n_turns=2, refresh=False):
     """
     :param chat_history: list of dicts with keys 'question', 'answer'
     :return: string with chat history formatted as a conversation
     """
+
+    if refresh:
+        return ""
 
     if len(chat_history) == 0:
         return  ""
@@ -141,14 +144,14 @@ def generate_markdown_output(question, answer, source_docs):
     question = remove_between_tags(question, "[HISTORY STARTS]", "[HISTORY ENDS]")
 
     markdown = f"""
-    
-## Question
-{question}
 
 ## Answer
 --------------------------------------------------------------------------------
 {answer}
 --------------------------------------------------------------------------------
+
+## Question
+{question}
 
 ## Source Documents
 """
