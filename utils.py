@@ -1,14 +1,16 @@
 import os
 import re
-
-from openai import OpenAI
-import anthropic
-from anthropic.types import TextBlock
+import datetime
 
 import ebooklib
 from ebooklib import epub
 import mobi
 import docx
+import nbformat
+
+from openai import OpenAI
+import anthropic
+from anthropic.types import TextBlock
 
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.vectorstores import FAISS
@@ -28,7 +30,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-class Digestor:
+class DigDoc:
 
     def __init__(self, docs_directory=None, model="gpt-4o", project_name="literature_review"):
         self.model = model
@@ -159,6 +161,8 @@ def generate_markdown_output(question, answer, source_docs):
 
     markdown = f"""
 
+# {datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
 ## Answer
 --------------------------------------------------------------------------------
 {answer}
@@ -239,6 +243,8 @@ def get_documents_raw_text(directory, target_docs):
                     not any(doc.lower() in filename.lower() for doc in target_docs):
                 continue
 
+            print (filename, "is being processed")
+
             if filename.endswith('.pdf'):
 
                 print(filename, "is being processed", end="\r")
@@ -277,12 +283,28 @@ def get_documents_raw_text(directory, target_docs):
                     raw_documents.append(Document(content))
                     n_files += 1
 
-            elif filename.endswith(".docx"):
+            elif filename.endswith(".docx") or filename.endswith(".doc"):
                 doc = docx.Document(os.path.join(root, filename))
                 content = ""
                 for para in doc.paragraphs:
                     content += para.text + "\n"
                 raw_documents.append(Document(content))
+                n_files += 1
+
+            elif filename.endswith(".py"):
+                with open(os.path.join(root, filename), 'r') as f:
+                    file_content = f.read()
+                raw_documents.append(Document(file_content))
+
+                n_files += 1
+
+            elif filename.endswith(".ipynb"):
+                with open(os.path.join(root, filename), 'r') as f:
+                    file_content = f.read()
+                nb = nbformat.reads(file_content, as_version=4)
+                for cell in nb.cells:
+                    if cell.cell_type == 'code':
+                        raw_documents.append(Document(cell.source))
                 n_files += 1
 
             else:
