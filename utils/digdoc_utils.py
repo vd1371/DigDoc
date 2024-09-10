@@ -8,10 +8,6 @@ import mobi
 import docx
 import nbformat
 
-from openai import OpenAI
-import anthropic
-from anthropic.types import TextBlock
-
 from langchain.text_splitter import CharacterTextSplitter
 from langchain.vectorstores import FAISS
 from langchain.document_loaders import PyPDFLoader
@@ -26,8 +22,9 @@ from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 
 from dotenv import load_dotenv
-
 load_dotenv()
+
+from .utils import get_context, save_response
 
 
 class DigDoc:
@@ -38,15 +35,19 @@ class DigDoc:
         self.chat_history = []
         self.project_name = project_name
         self.docs_directory = docs_directory
+        self.look_back_window = 3
+        self.file_name = os.path.join("projects", project_name, "ChatHistory.html")
 
-    def answer(self, question, refresh_history=False):
+    def answer(self, query):
         # Create a custom prompt template
         prompt_template = """
         Your role is a research assistant at a university that helps with reviewing documents.
         You have been asked to find information based on the provided context and question.
         Use the following pieces of context to answer the question.\n"""
 
-        prompt_template += f"{convert_chat_history(self.chat_history, n_turns=2, refresh=refresh_history)}"
+        prompt_template = "[HISTORY STARTS] Here is the chat history:\n"
+        prompt_template += f"{get_context(self.chat_history, self.look_back_window)}\n"
+        prompt_template += "[HISTORY ENDS]"
 
         prompt_template += """
         Context:
@@ -70,21 +71,21 @@ class DigDoc:
         )
 
         result = qa_chain.invoke({
-            "query": question,
+            "query": query,
         })
 
         # Ensure necessary keys are present in the result
         if 'result' not in result or 'source_documents' not in result:
             raise ValueError("The response from qa_chain is missing expected keys.")
 
-        answer, source_docs = result["result"], result["source_documents"]
-        markdown = generate_markdown_output(question, answer, source_docs)
-        save_markdown(markdown, self.project_name, append=True)
+        response, source_docs = result["result"], result["source_documents"]
 
         self.chat_history.append({
-            "question": question,
-            "answer": answer
+            "query": query,
+            "response": response
         })
+
+        save_response(self.chat_history, self.file_name, self.project_name)
 
         return result["result"], result["source_documents"]
 
@@ -131,29 +132,6 @@ class DigDoc:
 #                       Utils for Digestor                                    #
 # ---------------------------------------------------------------------------- #
 
-def convert_chat_history(chat_history, n_turns=2, refresh=False):
-    """
-    :param chat_history: list of dicts with keys 'question', 'answer'
-    :return: string with chat history formatted as a conversation
-    """
-
-    if refresh:
-        return ""
-
-    if len(chat_history) == 0:
-        return ""
-
-    chat_history = chat_history[-n_turns:]
-    chat = "[HISTORY STARTS] Here is the chat history:\n"
-    for i, chat_his in enumerate(chat_history):
-        chat += f"User: {chat_his['question']}\n"
-        chat += f"AI: {chat_his['answer']}\n"
-
-    chat += "[HISTORY ENDS]"
-
-    return chat
-
-
 def generate_markdown_output(question, answer, source_docs):
     # Remove the HISTORY STARTS and HISTORY ENDS and anything in between from
     # the question and answer
@@ -191,7 +169,7 @@ def generate_markdown_output(question, answer, source_docs):
 
 
 def save_markdown(markdown, project_name, append=False):
-    file_path = os.path.join("projects", project_name, "ChatHistory.md")
+    file_path = os.path.join("../projects", project_name, "ChatHistory.md")
 
     # Ensure the file exists, create it if it doesn't
     if not os.path.exists(file_path):
@@ -246,8 +224,6 @@ def get_documents_raw_text(directory, target_docs):
             print (filename, "is being processed")
 
             if filename.endswith('.pdf'):
-
-                print(filename, "is being processed", end="\r")
 
                 pdf_path = os.path.join(root, filename)
                 loader = PyPDFLoader(pdf_path)
@@ -314,89 +290,3 @@ def get_documents_raw_text(directory, target_docs):
         raise ValueError("No Files found.")
 
     return raw_documents
-
-
-# ---------------------------------------------------------------------------- #
-#                       Utils for HER model                                    #
-# ---------------------------------------------------------------------------- #
-
-class Her:
-
-    def __init__(self, model="gpt-4o", should_refresh_context=False, append_history=False):
-        self.model = model
-        self.should_refresh_context = should_refresh_context
-        self.append_history = append_history
-
-    def ask(self, query, role=None):
-        if role is None:
-            role = "You are a general assistant helping with various tasks."
-
-        if self.model == "gpt-4o":
-            client = OpenAI(
-                api_key=os.getenv("API_KEY"),
-            )
-            response = client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": role},
-                    {"role": "user",
-                     "content": f"Context: {get_context_for_her(self.should_refresh_context)}\n\nQuestion: {query}"}
-                ]
-            )
-            response = response.choices[0].message.content
-
-        elif self.model == "anthropic":
-            client = anthropic.Anthropic(
-                api_key=os.getenv("ANTHROPIC_API_KEY"),
-            )
-            message = client.messages.create(
-                model="claude-3-5-sonnet-20240620",
-                max_tokens=4096,
-                messages=[
-                    {"role": "user",
-                     "content": f"Context: {get_context_for_her(self.should_refresh_context)}\n\nQuestion: {query}"}
-                ]
-            )
-
-            # Extract text from TextBlock
-            if isinstance(message.content[0], TextBlock):
-                response = message.content[0].text
-            else:
-                response = str(message.content[0])
-
-        save_response_to_her(response, append=self.append_history)
-
-        return response
-
-
-def get_context_for_her(refresh=False):
-    if refresh:
-        return ""
-
-    # Open a markdown file and write the response
-    file_name = "Her.md"
-    if not os.path.exists(file_name):
-        with open(file_name, "w") as f:
-            f.write("")
-
-    with open(file_name, "r") as f:
-        context = f.read()
-
-    return context
-
-
-def save_response_to_her(response, file_name="TalkWithHer.md", append=False):
-    to_write = response
-    try:
-        with open(file_name, "w") as f:
-            current_file = f.read()
-    except Exception as e:
-        current_file = ""
-
-    if append:
-        to_write += "\n\n" + current_file
-
-    with open(file_name, "w") as f:
-        f.write(to_write)
-
-    print(f"Response saved to {file_name}")

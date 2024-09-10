@@ -12,7 +12,7 @@ DigDoc is my personal Python library designed to streamline the process of docum
 
 1. **Initialization**: Start by initializing the DigDoc class with the desired document directory and model.
     ```python
-    from utils import DigDoc
+    from utils.digdoc_utils import DigDoc
 
     digdoc = DigDoc(
         docs_directory="/path/to/your/documents",
