@@ -8,14 +8,15 @@ import mobi
 import docx
 import nbformat
 
+from bs4 import BeautifulSoup
+
 from langchain.text_splitter import CharacterTextSplitter
-from langchain.vectorstores import FAISS
-from langchain.document_loaders import PyPDFLoader
+from langchain_community.vectorstores import FAISS
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters.base import Document
 
-from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
-
+from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 
 from langchain.chains import RetrievalQA
@@ -244,9 +245,18 @@ def get_documents_raw_text(directory, target_docs):
                     if item.get_type() == ebooklib.ITEM_DOCUMENT:
 
                         content = item.get_content()
-                        # Convert to string
                         if isinstance(content, bytes):
                             content = content.decode('utf-8')
+
+                        text = BeautifulSoup(content, 'html.parser').get_text(strip=True)
+                        if len(text) < 100:
+                            continue
+
+                        chapter_title = get_chapter_title_from_epub(book, item)
+                        print (chapter_title)
+
+                        breakpoint()
+
                         raw_documents.append(Document(content))
 
                         n_files += 1
@@ -290,3 +300,12 @@ def get_documents_raw_text(directory, target_docs):
         raise ValueError("No Files found.")
 
     return raw_documents
+
+
+def get_chapter_title_from_epub(book, item):
+    """Helper function to get the chapter title from the TOC"""
+    for toc_item in book.toc:
+        if isinstance(toc_item, tuple):
+            if toc_item[0].href == item.file_name:
+                return toc_item[0].title
+    return "Unknown Chapter"

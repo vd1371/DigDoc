@@ -55,6 +55,7 @@ def save_response(chat_history, file_name, title="Talking with HER"):
                 border-radius: 10px;
                 position: relative;
                 font-size: 16px;
+                margin: 5px !important;
             }
             .query {
                 background-color: #dcf8c6;
