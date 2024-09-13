@@ -193,6 +193,13 @@ class DigDoc:
                             raw_documents.append(Document(content))
                             n_files += 1
 
+                # Add cpp and c files
+                elif filename.split('.')[-1] in ['cpp', 'c', 'h']:
+                    with open(os.path.join(root, filename), 'r') as f:
+                        file_content = f.read()
+                    raw_documents.append(Document(file_content))
+                    n_files += 1
+
                 elif filename.endswith(".mobi"):
                     book = mobi.Mobi(os.path.join(root, filename))
                     content = book.get_text()
