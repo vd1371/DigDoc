@@ -2,6 +2,12 @@ import os
 import re
 import datetime
 
+import json
+import requests
+import time
+import random
+from urllib.parse import urljoin
+
 import ebooklib
 from ebooklib import epub
 import mobi
@@ -22,11 +28,14 @@ from langchain_anthropic import ChatAnthropic
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 
+
 from dotenv import load_dotenv
 load_dotenv()
 
 from .utils import get_context, save_response
 
+
+BASE_DIREC = "projects"
 
 class DigDoc:
 
@@ -37,7 +46,10 @@ class DigDoc:
         self.project_name = project_name
         self.docs_directory = docs_directory
         self.look_back_window = 3
-        self.file_name = os.path.join("projects", project_name, "ChatHistory.html")
+        self.file_name = os.path.join(BASE_DIREC, project_name, "ChatHistory.html")
+
+        os.makedirs(BASE_DIREC, exist_ok=True)
+        self.project_path = os.path.join(BASE_DIREC, project_name)
 
     def answer(self, query):
         # Create a custom prompt template
@@ -96,24 +108,20 @@ class DigDoc:
         :param reindex: whether to reindex the documents
         """
 
-        if isinstance(target_docs, list) and len(target_docs) == 0:
-            target_docs = "all"
-
-        base_direc = "projects"
-        os.makedirs(base_direc, exist_ok=True)
-        project_path = os.path.join(base_direc, self.project_name)
+        if len(target_docs) == 0:
+            raise ValueError("You need to pass at least one document to read.")
 
         # This is the case when we have already vectorized the documents
-        if os.path.exists(project_path) and not reindex and target_docs == "all":
+        if os.path.exists(self.project_path) and not reindex:
             x = FAISS.load_local(
-                project_path,
+                self.project_path,
                 embeddings=OpenAIEmbeddings(),
                 allow_dangerous_deserialization=True
             )
             self.vectorstore = x
 
         # Iterate over all PDFs in the directory recursively in all folders
-        raw_documents = get_documents_raw_text(self.docs_directory, target_docs)
+        raw_documents = get_documents_raw_text(self.docs_directory, target_docs, self.project_path)
 
         # Split text into chunks
         text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
@@ -124,7 +132,7 @@ class DigDoc:
 
         # Create vector store
         vectorstore = FAISS.from_documents(texts, embeddings)
-        vectorstore.save_local(project_path)
+        vectorstore.save_local(self.project_path)
 
         self.vectorstore = vectorstore
 
@@ -211,9 +219,12 @@ def get_llm(model):
         raise ValueError(f"Model {model} not found.")
 
 
-def get_documents_raw_text(directory, target_docs):
+def get_documents_raw_text(directory, target_docs, project_path):
     raw_documents = []
     n_files = 0
+
+    if directory == "web":
+        return get_content_of_website(target_docs, project_path)
 
     for root, dirs, files in os.walk(directory):
         for filename in files:
@@ -309,3 +320,111 @@ def get_chapter_title_from_epub(book, item):
             if toc_item[0].href == item.file_name:
                 return toc_item[0].title
     return "Unknown Chapter"
+
+
+class WebScraper:
+    def __init__(self):
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        self.session = requests.Session()
+
+    def get_page(self, url):
+        try:
+            response = self.session.get(url, headers=self.headers)
+            response.raise_for_status()
+            return response.text
+        except requests.RequestException as e:
+            print(f"Error fetching {url}: {e}")
+            return None
+
+    def parse_content(self, html):
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        # Remove script and style elements
+        for script in soup(["script", "style"]):
+            script.decompose()
+        
+        # Get text
+        text = soup.get_text()
+        
+        # Break into lines and remove leading and trailing space on each
+        lines = (line.strip() for line in text.splitlines())
+        
+        # Break multi-headlines into a line each
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        
+        # Drop blank lines
+        text = '\n'.join(chunk for chunk in chunks if chunk)
+        
+        return text
+
+    def scrape_website(self, start_url, max_pages=10):
+        visited = set()
+        to_visit = [start_url]
+        scraped_content = []
+
+        while to_visit and len(visited) < max_pages:
+            url = to_visit.pop(0)
+            if url in visited:
+                continue
+
+            print(f"Scraping: {url}")
+            html = self.get_page(url)
+            if html:
+                content = self.parse_content(html)
+                scraped_content.append((url, content))
+                visited.add(url)
+
+                # Find more links
+                soup = BeautifulSoup(html, 'html.parser')
+                for link in soup.find_all('a', href=True):
+                    new_url = urljoin(url, link['href'])
+                    if new_url not in visited and new_url not in to_visit:
+                        to_visit.append(new_url)
+
+            # Add a random delay between requests
+            time.sleep(random.uniform(1, 3))
+
+        return scraped_content
+
+
+def get_content_of_website(target_urls, project_path):
+
+    raw_documents = []
+    scraper = WebScraper()
+
+    cache_direc = os.path.join(project_path, "cache")
+
+    if not os.path.exists(cache_direc):
+        with open(cache_direc, "w") as f:
+            json.dump({}, f)
+
+    with open(cache_direc, "r") as f:
+        cache = json.load(f)
+
+    for url in target_urls:
+
+        if url not in cache:
+            
+            # Add a random delay between requests
+            time.sleep(random.uniform(1, 5))
+
+            content = scraper.scrape_website(url, max_pages=1)
+            cache[url] = {}
+            cache[url]["content"] = content[0][1]
+            cache[url]["timestamp"] = datetime.datetime.now().isoformat()
+            cache[url]["source"] = url
+
+            with open(cache_direc, "w") as f:
+                json.dump(cache, f)
+
+        else:
+            print (f"Using cached content for {url}")
+
+        new_doc = Document(cache[url]["content"])
+        new_doc.metadata['source'] = cache[url]["source"]
+
+        raw_documents.append(new_doc)
+
+    return raw_documents
