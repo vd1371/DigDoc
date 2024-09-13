@@ -39,17 +39,26 @@ BASE_DIREC = "projects"
 
 class DigDoc:
 
-    def __init__(self, docs_directory=None, model="gpt-4o", project_name="literature_review"):
-        self.model = model
+    def __init__(self, **params):
+        self.model = params.get("model", "gpt-4o")
         self.vectorstore = None
-        self.chat_history = []
-        self.project_name = project_name
-        self.docs_directory = docs_directory
-        self.look_back_window = 3
-        self.file_name = os.path.join(BASE_DIREC, project_name, "ChatHistory.html")
 
+        self.target_docs = params.get("target_docs", [])
+        self.reindex = params.get("reindex", True)
+
+        self.project_name = params.get("project_name", "default")
+        self.docs_directory = params.get("docs_directory", "web")
+        self.file_name = os.path.join(BASE_DIREC, self.project_name, "ChatHistory.html")
         os.makedirs(BASE_DIREC, exist_ok=True)
-        self.project_path = os.path.join(BASE_DIREC, project_name)
+        self.project_path = os.path.join(BASE_DIREC, self.project_name)
+        os.makedirs(self.project_path, exist_ok=True)
+
+        self.look_back_window = 3
+        self.chat_history = []
+
+        self.max_depth = 1
+        self.max_pages = 1
+        self.load_from_cache = False
 
     def answer(self, query):
         # Create a custom prompt template
@@ -102,17 +111,17 @@ class DigDoc:
 
         return result["result"], result["source_documents"]
 
-    def read_docs(self, target_docs=None, reindex=False):
+    def dig(self):
         """
         :param target_docs: list of strings to filter the PDFs to vectorize
         :param reindex: whether to reindex the documents
         """
 
-        if len(target_docs) == 0:
+        if len(self.target_docs) == 0:
             raise ValueError("You need to pass at least one document to read.")
 
         # This is the case when we have already vectorized the documents
-        if os.path.exists(self.project_path) and not reindex:
+        if os.path.exists(self.project_path) and not self.reindex:
             x = FAISS.load_local(
                 self.project_path,
                 embeddings=OpenAIEmbeddings(),
@@ -121,7 +130,10 @@ class DigDoc:
             self.vectorstore = x
 
         # Iterate over all PDFs in the directory recursively in all folders
-        raw_documents = get_documents_raw_text(self.docs_directory, target_docs, self.project_path)
+        if self.docs_directory == "web":
+            raw_documents = self.get_content_of_website()
+        else:
+            raw_documents = self.get_documents_raw_text()
 
         # Split text into chunks
         text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
@@ -135,6 +147,110 @@ class DigDoc:
         vectorstore.save_local(self.project_path)
 
         self.vectorstore = vectorstore
+
+    def set_scrapping_params(self, max_depth, max_pages, load_from_cache):
+        self.max_depth = max_depth
+        self.max_pages = max_pages
+        self.load_from_cache = load_from_cache
+
+    def get_documents_raw_text(self):
+        raw_documents = []
+        n_files = 0
+
+        for root, dirs, files in os.walk(self.docs_directory):
+            for filename in files:
+
+                if isinstance(self.target_docs, list) and \
+                        not any(doc.lower() in filename.lower() for doc in self.target_docs):
+                    continue
+
+                print (filename, "is being processed")
+
+                if filename.endswith('.pdf'):
+                    pdf_path = os.path.join(root, filename)
+                    loader = PyPDFLoader(pdf_path)
+                    raw_documents.extend(loader.load())
+                    n_files += 1
+
+                elif filename.endswith('.txt'):
+                    with open(os.path.join(root, filename), 'r') as f:
+                        file_content = f.read()
+                    raw_documents.append(Document(file_content))
+                    n_files += 1
+
+                elif filename.endswith('.epub'):
+                    book = epub.read_epub(os.path.join(root, filename))
+                    for item in book.get_items():
+                        if item.get_type() == ebooklib.ITEM_DOCUMENT:
+                            content = item.get_content()
+                            if isinstance(content, bytes):
+                                content = content.decode('utf-8')
+
+                            text = BeautifulSoup(content, 'html.parser').get_text(strip=True)
+                            if len(text) < 100:
+                                continue
+
+                            raw_documents.append(Document(content))
+                            n_files += 1
+
+                elif filename.endswith(".mobi"):
+                    book = mobi.Mobi(os.path.join(root, filename))
+                    content = book.get_text()
+                    if content:
+                        raw_documents.append(Document(content))
+                        n_files += 1
+
+                elif filename.endswith(".docx") or filename.endswith(".doc"):
+                    doc = docx.Document(os.path.join(root, filename))
+                    content = ""
+                    for para in doc.paragraphs:
+                        content += para.text + "\n"
+                    raw_documents.append(Document(content))
+                    n_files += 1
+
+                elif filename.endswith(".py"):
+                    with open(os.path.join(root, filename), 'r') as f:
+                        file_content = f.read()
+                    raw_documents.append(Document(file_content))
+                    n_files += 1
+
+                elif filename.endswith(".ipynb"):
+                    with open(os.path.join(root, filename), 'r') as f:
+                        file_content = f.read()
+                    nb = nbformat.reads(file_content, as_version=4)
+                    for cell in nb.cells:
+                        if cell.cell_type == 'code':
+                            raw_documents.append(Document(cell.source))
+                    n_files += 1
+
+                else:
+                    pass
+
+        if n_files == 0:
+            raise ValueError("No Files found.")
+
+        return raw_documents
+    
+    def get_content_of_website(self):
+
+        raw_documents = []
+        scraper = WebScraper(
+            max_pages=self.max_pages,
+            max_depth=self.max_depth,
+            load_from_cache=self.load_from_cache
+        )
+
+        for url in self.target_docs:
+
+            contents = scraper.scrape_website(url)
+            for content in contents:
+
+                new_doc = Document(content[1])
+                new_doc.metadata['source'] = content[0]
+                raw_documents.append(new_doc)
+
+        return raw_documents
+
 
 
 # ---------------------------------------------------------------------------- #
@@ -219,115 +335,31 @@ def get_llm(model):
         raise ValueError(f"Model {model} not found.")
 
 
-def get_documents_raw_text(directory, target_docs, project_path):
-    raw_documents = []
-    n_files = 0
-
-    if directory == "web":
-        return get_content_of_website(target_docs, project_path)
-
-    for root, dirs, files in os.walk(directory):
-        for filename in files:
-
-            if isinstance(target_docs, list) and \
-                    not any(doc.lower() in filename.lower() for doc in target_docs):
-                continue
-
-            print (filename, "is being processed")
-
-            if filename.endswith('.pdf'):
-
-                pdf_path = os.path.join(root, filename)
-                loader = PyPDFLoader(pdf_path)
-                raw_documents.extend(loader.load())
-
-                n_files += 1
-
-            elif filename.endswith('.txt'):
-                with open(os.path.join(root, filename), 'r') as f:
-                    file_content = f.read()
-                raw_documents.append(Document(file_content))
-
-                n_files += 1
-
-            elif filename.endswith('.epub'):
-                book = epub.read_epub(os.path.join(root, filename))
-                for item in book.get_items():
-                    if item.get_type() == ebooklib.ITEM_DOCUMENT:
-
-                        content = item.get_content()
-                        if isinstance(content, bytes):
-                            content = content.decode('utf-8')
-
-                        text = BeautifulSoup(content, 'html.parser').get_text(strip=True)
-                        if len(text) < 100:
-                            continue
-
-                        chapter_title = get_chapter_title_from_epub(book, item)
-                        print (chapter_title)
-
-                        breakpoint()
-
-                        raw_documents.append(Document(content))
-
-                        n_files += 1
-
-            elif filename.endswith(".mobi"):
-                book = mobi.Mobi(os.path.join(root, filename))
-
-                content = book.get_text()
-                if content:
-                    raw_documents.append(Document(content))
-                    n_files += 1
-
-            elif filename.endswith(".docx") or filename.endswith(".doc"):
-                doc = docx.Document(os.path.join(root, filename))
-                content = ""
-                for para in doc.paragraphs:
-                    content += para.text + "\n"
-                raw_documents.append(Document(content))
-                n_files += 1
-
-            elif filename.endswith(".py"):
-                with open(os.path.join(root, filename), 'r') as f:
-                    file_content = f.read()
-                raw_documents.append(Document(file_content))
-
-                n_files += 1
-
-            elif filename.endswith(".ipynb"):
-                with open(os.path.join(root, filename), 'r') as f:
-                    file_content = f.read()
-                nb = nbformat.reads(file_content, as_version=4)
-                for cell in nb.cells:
-                    if cell.cell_type == 'code':
-                        raw_documents.append(Document(cell.source))
-                n_files += 1
-
-            else:
-                pass
-
-    if n_files == 0:
-        raise ValueError("No Files found.")
-
-    return raw_documents
-
-
-def get_chapter_title_from_epub(book, item):
-    """Helper function to get the chapter title from the TOC"""
-    for toc_item in book.toc:
-        if isinstance(toc_item, tuple):
-            if toc_item[0].href == item.file_name:
-                return toc_item[0].title
-    return "Unknown Chapter"
-
-
 class WebScraper:
-    def __init__(self):
+    def __init__(self, **params):
         self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         self.session = requests.Session()
+        self.max_pages = params.get("max_pages", 10)
+        self.max_depth = params.get("max_depth", 1)
+        self.load_from_cache = params.get("load_from_cache", False)
+
+        self.cache_direc = "scrapping_cache.json"
+        if not os.path.exists(self.cache_direc):
+            with open(self.cache_direc, "w") as f:
+                json.dump({}, f)
+        
+        with open(self.cache_direc, "r") as f:
+            self.cache = json.load(f)
+
+    def add_to_cache(self, url, content, page_urls):
+        self.cache[url] = {
+            "content": content,
+            "page_urls": page_urls
+        }
+        with open(self.cache_direc, "w") as f:
+            json.dump(self.cache, f)
 
     def get_page(self, url):
         try:
@@ -359,72 +391,57 @@ class WebScraper:
         
         return text
 
-    def scrape_website(self, start_url, max_pages=10):
+    def scrape_website(self, start_url, max_pages=10, max_depth=1):
+        
         visited = set()
-        to_visit = [start_url]
+        assert max_depth > 0, "max_depth must be greater than 0, at least 1"
+
+        to_visit = {i: [] for i in range(max_depth)}
+        to_visit[0] = [start_url]
+
         scraped_content = []
+        for depth in to_visit:
+            for url in to_visit[depth]:
 
-        while to_visit and len(visited) < max_pages:
-            url = to_visit.pop(0)
-            if url in visited:
-                continue
+                if url in visited or len(visited) >= max_pages:
+                    continue
 
-            print(f"Scraping: {url}")
-            html = self.get_page(url)
-            if html:
-                content = self.parse_content(html)
-                scraped_content.append((url, content))
-                visited.add(url)
+                if url in self.cache and self.load_from_cache:
+                    print (f"Using cached content for {url}")
+                    scraped_content.append((url, self.cache[url]["content"]))
+                    visited.add(url)
 
-                # Find more links
-                soup = BeautifulSoup(html, 'html.parser')
-                for link in soup.find_all('a', href=True):
-                    new_url = urljoin(url, link['href'])
-                    if new_url not in visited and new_url not in to_visit:
-                        to_visit.append(new_url)
+                    # Add new urls to visit
+                    for new_url in self.cache[url]["page_urls"]:
+                        if new_url not in visited and depth + 1 < max_depth:
+                            to_visit[depth + 1].append(new_url)
 
-            # Add a random delay between requests
-            time.sleep(random.uniform(1, 3))
+                    continue
+
+                print(f"Scraping: {url}")
+                html = self.get_page(url)
+                if html:
+                    content = self.parse_content(html)
+                    scraped_content.append((url, content))
+                    visited.add(url)
+
+                    # Find more links
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    new_urls = []
+                    for link in soup.find_all('a', href=True):
+                        new_url = urljoin(url, link['href'])
+
+                        if "javascript:void(0)" in new_url:
+                            continue
+                        new_urls.append(new_url)
+                        
+                        if new_url not in visited and depth + 1 < max_depth:
+                            to_visit[depth + 1].append(new_url)
+
+                    self.add_to_cache(url, content, new_urls)
+
+                # Add a random delay between requests
+                time.sleep(random.uniform(1, 3))
 
         return scraped_content
-
-
-def get_content_of_website(target_urls, project_path):
-
-    raw_documents = []
-    scraper = WebScraper()
-
-    cache_direc = os.path.join(project_path, "cache")
-
-    if not os.path.exists(cache_direc):
-        with open(cache_direc, "w") as f:
-            json.dump({}, f)
-
-    with open(cache_direc, "r") as f:
-        cache = json.load(f)
-
-    for url in target_urls:
-
-        if url not in cache:
-            
-            # Add a random delay between requests
-            time.sleep(random.uniform(1, 5))
-
-            content = scraper.scrape_website(url, max_pages=1)
-            cache[url] = {}
-            cache[url]["content"] = content[0][1]
-            cache[url]["timestamp"] = datetime.datetime.now().isoformat()
-            cache[url]["source"] = url
-
-            with open(cache_direc, "w") as f:
-                json.dump(cache, f)
-
-        else:
-            print (f"Using cached content for {url}")
-
-        new_doc = Document(cache[url]["content"])
-        new_doc.metadata['source'] = cache[url]["source"]
-
-        raw_documents.append(new_doc)
-
-    return raw_documents
