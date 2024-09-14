@@ -58,8 +58,7 @@ class DigDoc:
         self.load_from_cache = False
 
     def answer(self, query):
-        # Create a query engine to search the vector store
-        
+        #Create a query engine
         vector_query_engine = self.vectorstore.as_query_engine(similarity_top_k=5)
         
         vector_tool = QueryEngineTool.from_defaults(
@@ -68,6 +67,7 @@ class DigDoc:
                 "Useful for retrieving specific context from the Document."
             ),
         )
+
         from llama_index.core.selectors import (
             PydanticMultiSelector,
             PydanticSingleSelector,
@@ -99,13 +99,13 @@ class DigDoc:
             raw_documents = self.get_content_of_website()
         else:
             raw_documents = self.get_documents_raw_text()
+        
             
         documents = []
-        
+                        
         for i in range(len(raw_documents)):
-            documents.append(Document(text=raw_documents[i]))
-            
-        # Split text into chunk
+            documents.append(Document(text=raw_documents[i].page_content))
+        
         splitter = SentenceSplitter(chunk_size=1024)
         nodes = splitter.get_nodes_from_documents(documents)
         
@@ -120,7 +120,7 @@ class DigDoc:
 
         
         Settings.llm = llm
-        Settings.chunk_size = 1024
+        Settings.chunk_size = 2048
         Settings.embed_model = embeddings
         
         
@@ -130,8 +130,8 @@ class DigDoc:
         vector_store = QdrantVectorStore(client=client,collection_name="test",)
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
         vector_index = VectorStoreIndex(nodes,storage_context=storage_context)
+        
 
-        # Create vector store
         self.vectorstore = vector_index
 
     def set_scrapping_params(self, max_depth, max_pages, load_from_cache):
