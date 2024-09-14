@@ -13,22 +13,19 @@ from ebooklib import epub
 import mobi
 import docx
 import nbformat
-
 from bs4 import BeautifulSoup
-
-from langchain.text_splitter import CharacterTextSplitter
-from langchain_community.vectorstores import FAISS
+from llama_index.core import Settings
+from llama_index.llms.openai import OpenAI
+from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.core.query_engine.router_query_engine import RouterQueryEngine
+from llama_index.core.tools import QueryEngineTool
+from llama_index.core.node_parser import SentenceSplitter
+from llama_index.core import SummaryIndex, VectorStoreIndex
+from llama_index.vector_stores.qdrant import QdrantVectorStore
+from qdrant_client import QdrantClient
+from llama_index.core import StorageContext
+from llama_index.core import Document
 from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters.base import Document
-
-from langchain_openai import OpenAIEmbeddings
-from langchain_openai import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
-
-from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
-
-
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -61,55 +58,32 @@ class DigDoc:
         self.load_from_cache = False
 
     def answer(self, query):
-        # Create a custom prompt template
-        prompt_template = """
-        Your role is a research assistant at a university that helps with reviewing documents.
-        You have been asked to find information based on the provided context and question.
-        Use the following pieces of context to answer the question.\n"""
-
-        prompt_template = "[HISTORY STARTS] Here is the chat history:\n"
-        prompt_template += f"{get_context(self.chat_history, self.look_back_window)}\n"
-        prompt_template += "[HISTORY ENDS]"
-
-        prompt_template += """
-        Context:
-        {context}
-
-        Question: {question}
-        Answer: """
-
-        PROMPT = PromptTemplate(
-            template=prompt_template,
-            input_variables=["context", "question"]
+        # Create a query engine to search the vector store
+        
+        vector_query_engine = self.vectorstore.as_query_engine(similarity_top_k=5)
+        
+        vector_tool = QueryEngineTool.from_defaults(
+            query_engine=vector_query_engine,
+            description=(
+                "Useful for retrieving specific context from the Document."
+            ),
         )
-
-        # Create a retrieval-based question-answering chain with GPT-4
-        qa_chain = RetrievalQA.from_chain_type(
-            llm=get_llm(self.model),
-            chain_type="stuff",
-            retriever=self.vectorstore.as_retriever(search_kwargs={"k": 5}),  # Retrieve top 4 documents
-            return_source_documents=True,
-            chain_type_kwargs={"prompt": PROMPT}
+        from llama_index.core.selectors import (
+            PydanticMultiSelector,
+            PydanticSingleSelector,
         )
+        query_engine = RouterQueryEngine(
+            selector=PydanticSingleSelector.from_defaults(),
+            query_engine_tools=[
+                vector_tool,
+            ],
+            verbose=True,
+            
+        )
+        
+        response = query_engine.query(query)
 
-        result = qa_chain.invoke({
-            "query": query,
-        })
-
-        # Ensure necessary keys are present in the result
-        if 'result' not in result or 'source_documents' not in result:
-            raise ValueError("The response from qa_chain is missing expected keys.")
-
-        response, source_docs = result["result"], result["source_documents"]
-
-        self.chat_history.append({
-            "query": query,
-            "response": response
-        })
-
-        save_response(self.chat_history, self.file_name, self.project_name)
-
-        return result["result"], result["source_documents"]
+        return response
 
     def dig(self):
         """
@@ -120,33 +94,45 @@ class DigDoc:
         if len(self.target_docs) == 0:
             raise ValueError("You need to pass at least one document to read.")
 
-        # This is the case when we have already vectorized the documents
-        if os.path.exists(self.project_path) and not self.reindex:
-            x = FAISS.load_local(
-                self.project_path,
-                embeddings=OpenAIEmbeddings(),
-                allow_dangerous_deserialization=True
-            )
-            self.vectorstore = x
-
         # Iterate over all PDFs in the directory recursively in all folders
         if self.docs_directory == "web":
             raw_documents = self.get_content_of_website()
         else:
             raw_documents = self.get_documents_raw_text()
+            
+        documents = []
+        
+        for i in range(len(raw_documents)):
+            documents.append(Document(text=raw_documents[i]))
+            
+        # Split text into chunk
+        splitter = SentenceSplitter(chunk_size=1024)
+        nodes = splitter.get_nodes_from_documents(documents)
+        
+        system_prompt = """
+        Your role is a research assistant at a university that helps with reviewing documents.
+        You have been asked to find information based on the provided context and question.
+        Use the following pieces of context to answer the question.\n"""
+        
+        
+        embeddings = OpenAIEmbedding()
+        llm = OpenAI(api_key= os.getenv("API_KEY"), model='gpt-4o', system_prompt=system_prompt, temperature=0.25)
 
-        # Split text into chunks
-        text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
-        texts = text_splitter.split_documents(raw_documents)
-
-        # Create embeddings
-        embeddings = OpenAIEmbeddings()
+        
+        Settings.llm = llm
+        Settings.chunk_size = 1024
+        Settings.embed_model = embeddings
+        
+        
+        client = QdrantClient(
+        location=":memory:"
+        )
+        vector_store = QdrantVectorStore(client=client,collection_name="test",)
+        storage_context = StorageContext.from_defaults(vector_store=vector_store)
+        vector_index = VectorStoreIndex(nodes,storage_context=storage_context)
 
         # Create vector store
-        vectorstore = FAISS.from_documents(texts, embeddings)
-        vectorstore.save_local(self.project_path)
-
-        self.vectorstore = vectorstore
+        self.vectorstore = vector_index
 
     def set_scrapping_params(self, max_depth, max_pages, load_from_cache):
         self.max_depth = max_depth
@@ -331,15 +317,15 @@ def remove_between_tags(text, start_tag, end_tag):
     return re.sub(pattern, '', text, flags=re.DOTALL)
 
 
-def get_llm(model):
-    if model == "gpt-4o":
-        return ChatOpenAI(model_name="gpt-4o")
+# def get_llm(model):
+#     if model == "gpt-4o":
+#         return ChatOpenAI(model_name="gpt-4o")
 
-    elif model == "anthropic":
-        return ChatAnthropic(model_name="claude-3-5-sonnet-20240620")
+#     elif model == "anthropic":
+#         return ChatAnthropic(model_name="claude-3-5-sonnet-20240620")
 
-    else:
-        raise ValueError(f"Model {model} not found.")
+#     else:
+#         raise ValueError(f"Model {model} not found.")
 
 
 class WebScraper:
