@@ -2,12 +2,6 @@ import os
 import re
 import datetime
 
-import json
-import requests
-import time
-import random
-from urllib.parse import urljoin
-
 import ebooklib
 from ebooklib import epub
 import mobi
@@ -28,12 +22,11 @@ from langchain_anthropic import ChatAnthropic
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 
+from .utils import get_context, save_response
+from .WebScraper import WebScraper
 
 from dotenv import load_dotenv
 load_dotenv()
-
-from .utils import get_context, save_response
-
 
 BASE_DIREC = "projects"
 
@@ -43,11 +36,11 @@ class DigDoc:
         self.model = params.get("model", "gpt-4o")
         self.vectorstore = None
 
-        self.target_docs = params.get("target_docs", [])
+        self.target = params.get("target", [])
         self.reindex = params.get("reindex", True)
 
         self.project_name = params.get("project_name", "default")
-        self.docs_directory = params.get("docs_directory", "web")
+        self.directory = params.get("directory", "web")
         self.file_name = os.path.join(BASE_DIREC, self.project_name, "ChatHistory.html")
         os.makedirs(BASE_DIREC, exist_ok=True)
         self.project_path = os.path.join(BASE_DIREC, self.project_name)
@@ -61,11 +54,15 @@ class DigDoc:
         self.load_from_cache = False
 
     def answer(self, query):
+
+        if self.directory == "google":
+            self.dig(query)
+
         # Create a custom prompt template
         prompt_template = """
         Your role is a research assistant at a university that helps with reviewing documents.
         You have been asked to find information based on the provided context and question.
-        Use the following pieces of context to answer the question.\n"""
+        Say you don't know if there are not enough related information\n"""
 
         prompt_template = "[HISTORY STARTS] Here is the chat history:\n"
         prompt_template += f"{get_context(self.chat_history, self.look_back_window)}\n"
@@ -111,13 +108,20 @@ class DigDoc:
 
         return result["result"], result["source_documents"]
 
-    def dig(self):
-        """
-        :param target_docs: list of strings to filter the PDFs to vectorize
-        :param reindex: whether to reindex the documents
-        """
+    def dig(self, query=None):
+        if not query and self.directory=="google":
+            """
+            The reason is that we need to have a way to pass the query to the dig method
+            The Jupyter architecture cannot be changed, so I will dig when the answer method is called with the query
+            """
+            return
 
-        if len(self.target_docs) == 0:
+        if self.directory == "google":
+            assert len(self.target) == 1, "You need to pass a single website, or 'all' to the target if directory is google"
+            assert self.max_depth == 1, "Max depth should be 1 for google search"
+            assert self.max_pages <= 10, "Max pages should be max 10 for google search"
+
+        if len(self.target) == 0:
             raise ValueError("You need to pass at least one document to read.")
 
         # This is the case when we have already vectorized the documents
@@ -130,8 +134,12 @@ class DigDoc:
             self.vectorstore = x
 
         # Iterate over all PDFs in the directory recursively in all folders
-        if self.docs_directory == "web":
+        if self.directory == "web":
             raw_documents = self.get_content_of_website()
+
+        elif self.directory == "google":
+            raw_documents = self.get_content_from_google_search(query)
+
         else:
             raw_documents = self.get_documents_raw_text()
 
@@ -157,11 +165,12 @@ class DigDoc:
         raw_documents = []
         n_files = 0
 
-        for root, dirs, files in os.walk(self.docs_directory):
-            for filename in files:
+        for root, dirs, files in os.walk(self.directory):
+            for fl_nm in files:
+                filename = fl_nm.lower()
 
-                if isinstance(self.target_docs, list) and \
-                        not any(doc.lower() in filename.lower() for doc in self.target_docs):
+                if isinstance(self.target, list) and \
+                        not any(doc.lower() in filename for doc in self.target):
                     continue
 
                 print (filename, "is being processed")
@@ -244,10 +253,11 @@ class DigDoc:
         scraper = WebScraper(
             max_pages=self.max_pages,
             max_depth=self.max_depth,
-            load_from_cache=self.load_from_cache
+            load_from_cache=self.load_from_cache,
+            project_path=self.project_path
         )
 
-        for url in self.target_docs:
+        for url in self.target:
 
             contents = scraper.scrape_website(url)
             for content in contents:
@@ -258,6 +268,24 @@ class DigDoc:
 
         return raw_documents
 
+    def get_content_from_google_search(self, query):
+
+        raw_documents = []
+        scraper = WebScraper(
+            max_pages=self.max_pages,
+            max_depth=self.max_depth,
+            load_from_cache=self.load_from_cache,
+            project_path=self.project_path
+        )
+
+        contents = scraper.scrape_google_search(self.target[0], query)
+        for url, content in contents:
+
+            new_doc = Document(content)
+            new_doc.metadata['source'] = url
+            raw_documents.append(new_doc)
+
+        return raw_documents
 
 
 # ---------------------------------------------------------------------------- #
@@ -342,113 +370,3 @@ def get_llm(model):
         raise ValueError(f"Model {model} not found.")
 
 
-class WebScraper:
-    def __init__(self, **params):
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        self.session = requests.Session()
-        self.max_pages = params.get("max_pages", 10)
-        self.max_depth = params.get("max_depth", 1)
-        self.load_from_cache = params.get("load_from_cache", False)
-
-        self.cache_direc = "scrapping_cache.json"
-        if not os.path.exists(self.cache_direc):
-            with open(self.cache_direc, "w") as f:
-                json.dump({}, f)
-        
-        with open(self.cache_direc, "r") as f:
-            self.cache = json.load(f)
-
-    def add_to_cache(self, url, content, page_urls):
-        self.cache[url] = {
-            "content": content,
-            "page_urls": page_urls
-        }
-        with open(self.cache_direc, "w") as f:
-            json.dump(self.cache, f)
-
-    def get_page(self, url):
-        try:
-            response = self.session.get(url, headers=self.headers)
-            response.raise_for_status()
-            return response.text
-        except requests.RequestException as e:
-            print(f"Error fetching {url}: {e}")
-            return None
-
-    def parse_content(self, html):
-        soup = BeautifulSoup(html, 'html.parser')
-        
-        # Remove script and style elements
-        for script in soup(["script", "style"]):
-            script.decompose()
-        
-        # Get text
-        text = soup.get_text()
-        
-        # Break into lines and remove leading and trailing space on each
-        lines = (line.strip() for line in text.splitlines())
-        
-        # Break multi-headlines into a line each
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        
-        # Drop blank lines
-        text = '\n'.join(chunk for chunk in chunks if chunk)
-        
-        return text
-
-    def scrape_website(self, start_url, max_pages=10, max_depth=1):
-        
-        visited = set()
-        assert max_depth > 0, "max_depth must be greater than 0, at least 1"
-
-        to_visit = {i: [] for i in range(max_depth)}
-        to_visit[0] = [start_url]
-
-        scraped_content = []
-        for depth in to_visit:
-            for url in to_visit[depth]:
-
-                if url in visited or len(visited) >= max_pages:
-                    continue
-
-                if url in self.cache and self.load_from_cache:
-                    print (f"Using cached content for {url}")
-                    scraped_content.append((url, self.cache[url]["content"]))
-                    visited.add(url)
-
-                    # Add new urls to visit
-                    for new_url in self.cache[url]["page_urls"]:
-                        if new_url not in visited and depth + 1 < max_depth:
-                            to_visit[depth + 1].append(new_url)
-
-                    continue
-
-                print(f"Scraping: {url}")
-                html = self.get_page(url)
-                if html:
-                    content = self.parse_content(html)
-                    scraped_content.append((url, content))
-                    visited.add(url)
-
-                    # Find more links
-                    soup = BeautifulSoup(html, 'html.parser')
-                    
-                    new_urls = []
-                    for link in soup.find_all('a', href=True):
-                        new_url = urljoin(url, link['href'])
-
-                        if "javascript:void(0)" in new_url:
-                            continue
-                        new_urls.append(new_url)
-                        
-                        if new_url not in visited and depth + 1 < max_depth:
-                            to_visit[depth + 1].append(new_url)
-
-                    self.add_to_cache(url, content, new_urls)
-
-                # Add a random delay between requests
-                time.sleep(random.uniform(1, 3))
-
-        return scraped_content
