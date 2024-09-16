@@ -28,6 +28,7 @@ from llama_index.core import Document
 from langchain_community.document_loaders import PyPDFLoader
 from dotenv import load_dotenv
 load_dotenv()
+from llama_index.llms.anthropic import Anthropic
 
 from .utils import get_context, save_response
 
@@ -109,27 +110,29 @@ class DigDoc:
         splitter = SentenceSplitter(chunk_size=1024)
         nodes = splitter.get_nodes_from_documents(documents)
         
-        system_prompt = """
-        Your role is a research assistant at a university that helps with reviewing documents.
-        You have been asked to find information based on the provided context and question.
-        Use the following pieces of context to answer the question.\n"""
         
         
         embeddings = OpenAIEmbedding()
-        llm = OpenAI(api_key= os.getenv("API_KEY"), model='gpt-4o', system_prompt=system_prompt, temperature=0.25)
+        llm = get_llm(self.model)
 
         
         Settings.llm = llm
         Settings.chunk_size = 2048
         Settings.embed_model = embeddings
         
-        
-        client = QdrantClient(
-        location=":memory:"
-        )
-        vector_store = QdrantVectorStore(client=client,collection_name="test",)
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
-        vector_index = VectorStoreIndex(nodes,storage_context=storage_context)
+        if os.path.exists(self.project_path) and not self.reindex:
+            client = QdrantClient(
+            path = self.project_name
+            )
+            vector_store = QdrantVectorStore(client=client, collection_name=self.project_name)
+            vector_index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
+        else :
+            client = QdrantClient(
+                path = self.project_name
+            )
+            vector_store = QdrantVectorStore(client=client,collection_name= self.project_name,)
+            storage_context = StorageContext.from_defaults(vector_store=vector_store)
+            vector_index = VectorStoreIndex(nodes,storage_context=storage_context)
         
 
         self.vectorstore = vector_index
@@ -317,15 +320,20 @@ def remove_between_tags(text, start_tag, end_tag):
     return re.sub(pattern, '', text, flags=re.DOTALL)
 
 
-# def get_llm(model):
-#     if model == "gpt-4o":
-#         return ChatOpenAI(model_name="gpt-4o")
+def get_llm(model):
+    system_prompt = """
+        Your role is a research assistant at a university that helps with reviewing documents.
+        You have been asked to find information based on the provided context and question.
+        Use the following pieces of context to answer the question.\n"""
+    
+    if model == "gpt-4o":
+        return OpenAI(model_name="gpt-4o", api_key= os.getenv("OPENAI_API_KEY"), system_prompt= system_prompt, temperature=0.25)
 
-#     elif model == "anthropic":
-#         return ChatAnthropic(model_name="claude-3-5-sonnet-20240620")
+    elif model == "anthropic":
+        return Anthropic(model_name="claude-3-5-sonnet-20240620", api_key=os.getenv("ANTHROPIC_API_KEY"), temperature=0.25)
 
-#     else:
-#         raise ValueError(f"Model {model} not found.")
+    else:
+        raise ValueError(f"Model {model} not found.")
 
 
 class WebScraper:
