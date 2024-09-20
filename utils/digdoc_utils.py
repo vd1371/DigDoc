@@ -166,29 +166,28 @@ class DigDoc:
         n_files = 0
 
         for root, dirs, files in os.walk(self.directory):
-            for fl_nm in files:
-                filename = fl_nm.lower()
+            for filename in files:
 
                 if isinstance(self.target, list) and \
-                        not any(doc.lower() in filename for doc in self.target):
+                        not any(doc.lower() in filename.lower() for doc in self.target):
                     continue
 
-                print (filename, "is being processed")
+                print (filename.lower(), "is being processed")
 
-                if filename.endswith('.pdf'):
-                    pdf_path = os.path.join(root, filename)
+                if filename.lower().endswith('.pdf'):
+                    pdf_path = os.path.join(root, filename.lower())
                     loader = PyPDFLoader(pdf_path)
                     raw_documents.extend(loader.load())
                     n_files += 1
 
-                elif filename.endswith('.txt'):
-                    with open(os.path.join(root, filename), 'r') as f:
+                elif filename.lower().endswith('.txt'):
+                    with open(os.path.join(root, filename.lower()), 'r') as f:
                         file_content = f.read()
                     raw_documents.append(Document(file_content))
                     n_files += 1
 
-                elif filename.endswith('.epub'):
-                    book = epub.read_epub(os.path.join(root, filename))
+                elif filename.lower().endswith('.epub'):
+                    book = epub.read_epub(os.path.join(root, filename.lower()))
                     for item in book.get_items():
                         if item.get_type() == ebooklib.ITEM_DOCUMENT:
                             content = item.get_content()
@@ -203,35 +202,35 @@ class DigDoc:
                             n_files += 1
 
                 # Add cpp and c files
-                elif filename.split('.')[-1] in ['cpp', 'c', 'h']:
-                    with open(os.path.join(root, filename), 'r') as f:
+                elif filename.lower().split('.')[-1] in ['cpp', 'c', 'h']:
+                    with open(os.path.join(root, filename.lower()), 'r') as f:
                         file_content = f.read()
                     raw_documents.append(Document(file_content))
                     n_files += 1
 
-                elif filename.endswith(".mobi"):
-                    book = mobi.Mobi(os.path.join(root, filename))
+                elif filename.lower().endswith(".mobi"):
+                    book = mobi.Mobi(os.path.join(root, filename.lower()))
                     content = book.get_text()
                     if content:
                         raw_documents.append(Document(content))
                         n_files += 1
 
-                elif filename.endswith(".docx") or filename.endswith(".doc"):
-                    doc = docx.Document(os.path.join(root, filename))
+                elif filename.lower().endswith(".docx") or filename.lower().endswith(".doc"):
+                    doc = docx.Document(os.path.join(root, filename.lower()))
                     content = ""
                     for para in doc.paragraphs:
                         content += para.text + "\n"
                     raw_documents.append(Document(content))
                     n_files += 1
 
-                elif filename.endswith(".py"):
-                    with open(os.path.join(root, filename), 'r') as f:
+                elif filename.lower().endswith(".py"):
+                    with open(os.path.join(root, filename.lower()), 'r') as f:
                         file_content = f.read()
                     raw_documents.append(Document(file_content))
                     n_files += 1
 
-                elif filename.endswith(".ipynb"):
-                    with open(os.path.join(root, filename), 'r') as f:
+                elif filename.lower().endswith(".ipynb"):
+                    with open(os.path.join(root, filename.lower()), 'r') as f:
                         file_content = f.read()
                     nb = nbformat.reads(file_content, as_version=4)
                     for cell in nb.cells:
